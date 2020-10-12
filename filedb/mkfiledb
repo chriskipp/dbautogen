@@ -1,0 +1,447 @@
+#!/bin/zsh
+
+#===============================================
+# Paths for database, log files ect.
+DB_PATH="${HOME}/db/files.sqlite"
+LOGFILE="${LOG}/mkfiledb.log"
+#===============================================
+
+#===============================================
+# Batch size of updates between commits
+BATCH_SIZE=10000
+#===============================================
+
+
+#===============================================
+# Defining Table names
+TABLE='home'
+TMPTABLE="tmp"
+
+# Setting paths to index
+FINDPATH="${HOME}"
+PRUNEPATHS=" -name .cache "
+
+# Common SQL strings and DB schema
+BEGIN_TRANSACTION="BEGIN TRANSACTION;"
+END_TRANSACTION="COMMIT;"
+SCHEMA_PATHS='
+CREATE TABLE IF NOT EXISTS %s (
+        "id" INTEGER PRIMARY KEY,
+	"md5" VARCHAR(32),
+        "device" DECIMAL,		-- x
+        "fs_type" VARCHAR(32),		-- x
+        "file_type" CHAR(1),		-- x
+        "mimetype" VARCHAR(64),
+        "inode" INTEGER, 		-- x
+        "dir" VARCHAR,			-- x
+        "file" VARCHAR,			-- x
+        "size_b" INTEGER,		-- x
+        "disk_space_kb" INTEGER,	-- x
+        "access_time" DECIMAL,		-- x
+        "change_time" DECIMAL,		-- x
+        "modification_time" DECIMAL,	-- x
+        "user" VARCHAR(32),		-- x
+        "group" VARCHAR(32),		-- x
+        "permissions" NCHAR(9)		-- x
+);'
+
+SCHEMA_FTS5='
+-- Create a table. And an external content fts5 table to index it.
+CREATE VIRTUAL TABLE IF NOT EXISTS fts_idx USING fts5(file, dir, mimetype, user, "group", content="§", content_rowid="id");
+
+-- Triggers to keep the FTS index up to date.
+CREATE TRIGGER IF NOT EXISTS §_ai AFTER INSERT ON § BEGIN
+  INSERT INTO fts_idx(rowid, file, dir, mimetype, user, "group") VALUES (new.id, new.file, new.dir, new.mimetype, new.user, new."group");
+END;
+CREATE TRIGGER IF NOT EXISTS §_ad AFTER DELETE ON § BEGIN
+  INSERT INTO fts_idx(fts_idx, rowid, file, dir, mimetype, user, "group") VALUES("delete", old.id, old.file, old.dir, old.mimetype, old.user, old."group");
+END;
+CREATE TRIGGER IF NOT EXISTS §_au AFTER UPDATE ON § BEGIN
+  INSERT INTO fts_idx(fts_idx, rowid, file, dir, mimetype, user, "group") VALUES("delete", old.id, old.file, old.dir, old.mimetype, old.user, old."group");
+  INSERT INTO fts_idx(rowid, file, dir, mimetype, user, "group") VALUES (new.id, new.file, new.dir, new.mimetype, new.user, new."group");
+END;'
+
+#===============================================
+
+function gen_header() {
+  # Generating Header of main table inserting
+  # table name and choosen columns
+  printf '%s\n' "${SCHEMA_PATHS}" | \
+	  grep 'x$' | \
+	  grep -o '".*"' | \
+	  tr '\n' '\t' | \
+	  sed 's/\t/, /g' | \
+	  sed 's/,\ *$//'
+}
+
+function preparing_dababase() {
+
+    # Preparing the database for inserting new data
+    # or updating old data table
+    
+    #  1. Dropping old tmp table if it exists
+    printf 'Deleting existing temporary tables...\n'
+    printf 'DROP TABLE IF EXISTS %s;' ${TMPTABLE} | sqlite3 "${DB_PATH}"
+
+    SCHEMA_PATHTABLE=$(printf "${SCHEMA_PATHS}" "${TABLE}")
+    SCHEMA_TMPTABLE=$(printf "${SCHEMA_PATHS}" "${TMPTABLE}")
+
+    # 2. Creating main table if not present
+    printf 'Creating Table %s...\n' "${TABLE}"
+    printf '%s\n' "${SCHEMA_PATHTABLE}" | sed 's/\s*\-\- x$//' | sqlite3 "${DB_PATH}"
+
+    # 3. Creating a empty tmp table
+    printf 'Creating Table %s...\n' "${TMPTABLE}"
+    printf '%s\n' "${SCHEMA_TMPTABLE}" | sed 's/\s*\-\- x$//' | sqlite3 "${DB_PATH}"
+
+    # 4. Creating Index on identifier ( device, dir, file)
+    printf 'Creating Index on %s ( device, dir, file)\n' "${TABLE}"
+    printf 'CREATE INDEX IF NOT EXISTS abs_%s ON %s ( device, dir, file );\n' "${TABLE}" "${TABLE}" | sqlite3 "${DB_PATH}" 
+
+    # 5. Creating Index on absolute path ( dir || '/' || file)
+    printf 'Creating Index on %s ( dir || '"'/'"' || file)\n' "${TABLE}"
+    printf 'CREATE INDEX IF NOT EXISTS %s_path ON %s ( dir || '"'/'"' || file );\n' "${TABLE}" "${TABLE}" | sqlite3 "${DB_PATH}" 
+    
+    # 6. Creating FTS5 Index on path ( dir, file)
+    printf 'Creating FTS5 Index on %s ( dir , file, mimetype, user, "group")\n' "${TABLE}"
+    printf '%s\n' "${SCHEMA_FTS5}" | sed "s/§/${TABLE}/g" | sqlite3 "${DB_PATH}"
+}
+
+
+function find_files() {
+  # Basically the standart unix find command with a lot
+  # of options and format strings to get to "ISERT INTO..."
+  #
+  # The split cuts the stream of the
+  # INSERT COMMANDS into pieces:
+  #	BEGIN TRANSACTION;
+  # 	BATCH_SIZE INSERTS/UPDATES;
+  # 	COMMIT;
+  # Splitting the stream into BATCH_SIZE lines leads to:
+  #  - avoid (auto)commit on every insert (40 ms per COMMIT!)
+  #  - avoid rollback to the start without using tmp disk memory
+  HEADER="$(gen_header)"
+  FINDSTRING="INSERT INTO ${TMPTABLE}(${HEADER}) VALUES(%D, §'%F§', §'%y§', %i, §'%h§', §'%f§', %b, %k, %A@, %C@, %T@, §'%u§', §'%g§', §'%M§');\n"
+  printf 'Searching for files...\n'
+  (
+    find "${FINDPATH}" \($(printf ${PRUNEPATHS})\) -prune -o -printf "${FINDSTRING}" 2>"${LOGFILE}"
+  ) | sed "s/'/''/g" | sed "s/§''/'/g" | pv -i 0.1 -l | split --lines="${BATCH_SIZE}" --filter "(
+    printf '${BEGIN_TRANSACTION}\n'; cat -; printf '${END_TRANSACTION}\n'
+  )" | pv -i 0.1 -l | sqlite3 "${DB_PATH}"
+
+  printf 'Creating index on %s ( device, dir, file )...\n' "${TMPTABLE}"
+  printf 'CREATE INDEX IF NOT EXISTS %s_id ON %s ( device, dir, file );' "${TMPTABLE}" "${TMPTABLE}"  | sqlite3 "${DB_PATH}"
+}
+
+function update_stats() {
+  # Updates the stats of the paths table
+  # from the temporary table
+  printf 'Updating values in %s table...\n' "${TABLE}"
+  printf '
+  UPDATE %s SET (
+    "file_type",
+    "fs_type",
+    "size_b",
+    "disk_space_kb",
+    "access_time",
+    "change_time",
+    "modification_time",
+    "user",
+    "group",
+    "permissions",
+    "dir",
+    "file"
+  ) = (
+    SELECT "file_type",
+      "fs_type",
+      "size_b",
+      "disk_space_kb",
+      "access_time",
+      "change_time",
+      "modification_time",
+      "user",
+      "group",
+      "permissions",
+      "dir",
+      "file"
+    FROM %s
+      WHERE device = %s.device
+	AND dir = %s.dir
+	AND file = %s.file
+    );' "${TABLE}" "${TMPTABLE}" "${TABLE}" "${TABLE}" "${TABLE}"  \
+	    | sqlite3 "${DB_PATH}"
+  printf 'Inserting new records into %s table...\n' "${TABLE}"
+  printf 'INSERT INTO %s(device,
+   	    	fs_type,
+		file_type,
+		inode,
+		dir,
+		file,
+		size_b,
+		disk_space_kb,
+		access_time,
+		change_time,
+		modification_time,
+		user,
+		"group",
+		permissions)
+	SELECT t.device,
+		t.fs_type,
+		t.file_type,
+		t.inode,
+		t.dir,
+		t.file,
+		t.size_b,
+		t.disk_space_kb,
+		t.access_time,
+		t.change_time,
+		t.modification_time,
+		t.user,
+		"t.group",
+		t.permissions
+	FROM %s AS t
+	LEFT JOIN %s AS p
+	ON t.device = p.device
+		AND t.dir = p.dir
+		AND t.file = p.file
+	WHERE p.dir IS NULL;\n' "${TABLE}" "${TMPTABLE}" "${TABLE}" \
+		| sqlite3 "${DB_PATH}"
+  printf 'Deleting old records from %s table...\n' "${TABLE}"
+  printf 'DELETE FROM %s WHERE dir IS NULL;\n' "${TABLE}" \
+	  | sqlite3 "${DB_PATH}"
+  printf 'select %stmp %s, count(*), %s\n%s from tmp;\n' "'" "'" "'" "'" \
+	  | sqlite3 "${DB_PATH}"
+  printf 'select %s%s %s, count(*), %s\n%s from %s;\n' "'" "${TABLE}" "'" "'" "'" "${TABLE}" \
+	  | sqlite3 "${DB_PATH}"
+}
+
+function copy_mimetypes() {
+  # Copies already precalculated mimetypes
+  # so updating the database will only take
+  # a fraction of the initial database creation time
+  printf 'Copying mimetypes to current paths table...\n'
+  
+  (
+    printf '%s\n' "${BEGIN_TRANSACTION}"
+    printf 'SELECT DISTINCT 
+    		"UPDATE paths SET mimetype = %s",
+		o.mimetype,
+		"%s WHERE inode = ",
+		o.inode, ";"
+	    FROM paths_old AS o
+	    INNER JOIN paths AS p
+	    	ON p.inode = o.inode
+		AND o.mimetype IS NOT NULL;\n' "'" "'" |\
+	sqlite3 "${DB_PATH}" \
+	| tr -d '|' \
+    printf '%s\n' "${END_TRANSACTION}"
+  ) | sponge \
+	  | tee out.sql \
+	  | sqlite3 "${DB_PATH}"
+}
+
+function copy_md5() {
+  # Copies already precalculated md5 sums
+  # of files that have the same inode number
+  # and are havent changed since then
+  printf 'Copying md5sums to current paths table...\n'
+  (
+    printf '%s\n' "${BEGIN_TRANSACTION}"
+    printf 'SELECT DISTINCT
+    		"UPDATE paths SET md5 = %s",
+		o.md5,
+		"%s WHERE inode = ",
+		o.inode,
+		";"
+	    FROM paths_old AS o
+	    INNER JOIN paths AS p
+	        ON p.inode = o.inode
+		    AND o.change_time = p.change_time
+		    AND o.md5 IS NOT NULL;\n' "'" "'" | \
+			    sqlite3 "${DB_PATH}" | \
+			    tr -d '|' | \
+    printf '%s\n' "${END_TRANSACTION}"
+  ) | sponge | sqlite3 "${DB_PATH}"
+}
+
+function set_mimetype() {
+  # Calculates all mimetypes that are
+  # still unset - this might take time
+  # the first time you create the database
+  # especially if you have millions of files...
+  printf 'Setting missing mimetypes...\n'
+  CHANGE=1
+  NO_ALL=$(printf 'SELECT COUNT(*) FROM %s;\n' "${TABLE}" \
+	  | sqlite3 "${DB_PATH}")
+  LAST_NO_WO=0
+  
+  while true; do
+    NO_W_MIMETYPE=$(printf 'SELECT COUNT(*) FROM %s WHERE mimetype IS NOT NULL;' "${TABLE}" \
+	    | sqlite3 "${DB_PATH}")
+    NO_WO_MIMETYPE=$(printf 'SELECT COUNT(*) FROM %s WHERE mimetype IS NULL;' "${TABLE}" \
+	    | sqlite3 "${DB_PATH}")
+
+    PERCENT_W_MIMETYPE=$( ( [[ ${NO_ALL} -eq 0 ]] && print '0.00%')  || \
+    		printf "scale=2; 100 * ${NO_W_MIMETYPE} / ${NO_ALL}\n" | bc
+	)
+
+    # Displaying live stats about the progress
+    printf '%8s / %8s (%5s%%) mimetypes set, %8s missing\n' "${NO_W_MIMETYPE}" "${NO_ALL}" "${PERCENT_W_MIMETYPE}" "${NO_WO_MIMETYPE}"
+
+    CHANGE=$(printf '%s - %s\n' "${NO_WO_MIMETYPE}" "${LAST_NO_WO}" | bc)
+    LAST_NO_WO="${NO_WO_MIMETYPE}"
+
+    # Leaving the loop when finish or no more changes
+    [[ ${NO_WO_MIMETYPE} -eq 0 ]] && echo no nulls && break
+    [[ ${CHANGE} -eq 0 ]] && echo no change && break
+
+    # Calculates BATCH_SIZE mimetypes (using GNU parallel)
+    # and commits them to the DB
+    (
+      printf '%s\n' "${BEGIN_TRANSACTION}"
+      printf "SELECT dir || '/' || file
+      	FROM %s
+          WHERE mimetype IS NULL
+          LIMIT(%s);" "${TABLE}" "${BATCH_SIZE}" | \
+      sqlite3 "${DB_PATH}" | \
+      parallel --progress --joblog "${LOGFILE}" -m 'file --mime-type ' | \
+      sed 's/: /\t/' | \
+      awk -F'\t' '{ print "UPDATE %% SET mimetype = §"$2"§  WHERE dir || §/§ || file = §"$1"§;" }' | \
+      sed "s/'/''/g" | \
+      sed "s/§/'/g" | \
+      sed "s/%%/${TABLE}/g" | \
+      pv -l -i 0.1 -s "${BATCH_SIZE}" | \
+      sponge 
+      printf '%s\n' "${END_TRANSACTION}"
+    ) | sqlite3 "${DB_PATH}"
+  done
+}
+ 
+function set_md5() {
+  # Basically the same as set_mimetypes but for
+  # md5 sums
+  printf 'Setting missing md5 sums...\n'
+
+  CHANGE=1
+  NO_ALL=$(printf "SELECT COUNT(*)
+  	FROM %s
+	    WHERE file_type = 'f'
+	    AND (
+	    	    mimetype NOT LIKE 'inode%%'
+	    	    OR mimetype IS NULL
+		);" "${TABLE}" \
+			| sqlite3 "${DB_PATH}")
+  LAST_NO_WO=0
+
+
+  while true; do
+
+    NO_W_MD5=$(printf "SELECT COUNT(*)
+    		FROM %s
+		  WHERE file_type = 'f'
+		    AND md5 IS NOT NULL 
+		    AND (
+			mimetype NOT LIKE 'inode%%'
+			OR mimetype IS NULL
+			);" "${TABLE}" \
+		| sqlite3 "${DB_PATH}")
+
+    NO_WO_MD5=$(printf "SELECT COUNT(*)
+    		FROM %s
+		  WHERE file_type = 'f'
+		    AND md5 IS NULL
+		    AND (
+		        mimetype NOT LIKE 'inode%%'
+			OR mimetype IS NULL
+			);" "${TABLE}" \
+	      | sqlite3 "${DB_PATH}")
+
+    PERCENT_W_MD5=$(
+    	( [ ${NO_ALL}  = 0 ] && print|'0.00%')  || \
+    	printf "scale=2; 100 * ${NO_W_MD5} / ${NO_ALL}\n" | bc
+    )
+
+    CHANGE=$(printf '%s - %s\n' "${NO_WO_MD5}" "${LAST_NO_WO}" | bc)
+    LAST_NO_WO="${NO_WO_MD5}"
+
+    
+    # Exit signal
+    [[ ${NO_WO_MD5} -eq 0 ]] && echo no more nulls && break
+    [[ ${CHANGE} -eq 0 ]] && echo change is 0 && break
+
+    # Live progress stats
+    printf '%8s / %8s (%5s%%) md5 sums set, %8s missing\n' "${NO_W_MD5}" "${NO_ALL}" "${PERCENT_W_MD5}" "${NO_WO_MD5}"
+
+    # Parallel calculation of BATCH_SIZE md5 sums
+    # and commit to the DB
+    (
+      printf '%s\n' "${BEGIN_TRANSACTION}"
+      printf "SELECT dir || '/' || file
+      	FROM %s
+          WHERE md5 IS NULL
+          AND file_type = 'f'
+          AND fs_type != 'securityfs'
+          LIMIT(%s);" "${TABLE}" "${BATCH_SIZE}" | \
+      sqlite3 "${DB_PATH}" | \
+      parallel --progress --joblog "${LOGFILE}" -m md5sum 2>/dev/null | sed 's/  /\t/'| \
+      awk -F '\t' '{ print "UPDATE '"${TABLE}"' SET md5 = §"$1"§ WHERE dir || §/§ || file = §"$2"§;" }' | \
+      sed "s/'/''/g" | \
+      sed "s/§/'/g" | \
+      sponge 
+      printf '%s\n' "${END_TRANSACTION}"
+    ) | sqlite3 "${DB_PATH}"
+  done
+}
+
+
+function create_file_db() {
+
+  # Preparing database for inserting/updating
+  preparing_dababase
+  
+  # Gets a snapshot of the actual file sytem
+  # and updates the database
+  find_files
+  update_stats
+  
+  # Drops the old tables after all usefull
+  # data has been used
+  printf 'Dropping old %s table...\n' "${TMPTABLE}"
+  printf 'DROP TABLE IF EXISTS %s;' "${TMPTABLE}" | sqlite3 "${DB_PATH}"
+  printf 'DROP INDEX IF EXISTS abs_path_%s;' "${TMPTABLE}" | sqlite3 "${DB_PATH}"
+  
+  # Calculates the missing mimetypes
+  #set_mimetype # This step is time consuming the first time!
+  
+  # Calculates the missing md5 sums
+  set_md5 # Also time consuming for a complete run
+  
+  # Optimizing the generated Database
+  printf 'Vacuuming...\n' 
+  printf 'VACUUM;' | sqlite3 "${DB_PATH}"
+}
+
+
+#===============================================
+TMPTABLE="tmp"
+TABLE='home'
+FINDPATH="${HOME}"
+PRUNEPATHS=' -name .cache ' 
+#===============================================
+# Example config to index the current users home 
+# directory
+create_file_db
+#===============================================
+
+#===============================================
+TMPTABLE="tmp"
+TABLE='root'
+INDPATH='/'
+PRUNEPATHS=' -name proc -o -name opt -o -name tmp -o -name home -o -name root -o -name sys ' 
+#===============================================
+# Example config to index the systems root dir
+# omitting process, user paths, ect
+#===============================================
+create_file_db 
+#===============================================
+

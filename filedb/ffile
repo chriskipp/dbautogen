@@ -1,0 +1,21 @@
+#!/bin/zsh
+
+source "${HOME}/bin/color.sh"
+
+ffile () {
+        (
+           printf "SELECT rowid,
+	     	 bm25(fts_idx, 10),
+	   	user, 'group', mimetype,
+		highlight(fts_idx, 0, '${yel}', '${sgr0}') AS name,
+	       dir || '/' || file
+	       
+	     FROM fts_idx
+	     WHERE fts_idx
+	     MATCH '%s'
+	     ORDER BY bm25(fts_idx, 10)
+	     LIMIT(100);\n" "${1}"
+        ) | sqlite3 --header --column "${DB_PATH}"
+}
+
+ffile "${@}" | fzf --ansi --multi --cycle --reverse
