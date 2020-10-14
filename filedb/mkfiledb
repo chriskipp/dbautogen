@@ -8,7 +8,7 @@ LOGFILE="${LOG}/mkfiledb.log"
 
 #===============================================
 # Batch size of updates between commits
-BATCH_SIZE=10000
+BATCH_SIZE=100
 #===============================================
 
 
@@ -209,10 +209,10 @@ function update_stats() {
   printf 'Deleting old records from %s table...\n' "${TABLE}"
   printf 'DELETE FROM %s WHERE dir IS NULL;\n' "${TABLE}" \
 	  | sqlite3 "${DB_PATH}"
-  printf 'select %stmp %s, count(*), %s\n%s from tmp;\n' "'" "'" "'" "'" \
-	  | sqlite3 "${DB_PATH}"
-  printf 'select %s%s %s, count(*), %s\n%s from %s;\n' "'" "${TABLE}" "'" "'" "'" "${TABLE}" \
-	  | sqlite3 "${DB_PATH}"
+#  printf 'select %stmp %s, count(*), %s\n%s from tmp;\n' "'" "'" "'" "'" \
+#	  | sqlite3 "${DB_PATH}"
+#  printf 'select %s%s %s, count(*), %s\n%s from %s;\n' "'" "${TABLE}" "'" "'" "'" "${TABLE}" \
+#	  | sqlite3 "${DB_PATH}"
 }
 
 function copy_mimetypes() {
@@ -304,13 +304,12 @@ function set_mimetype() {
           WHERE mimetype IS NULL
           LIMIT(%s);" "${TABLE}" "${BATCH_SIZE}" | \
       sqlite3 "${DB_PATH}" | \
-      parallel --progress --joblog "${LOGFILE}" -m 'file --mime-type ' | \
-      sed 's/: /\t/' | \
+      parallel --joblog "${LOGFILE}" -m 'file --mime-type ' | \
+      sed 's/: */\t/' | \
       awk -F'\t' '{ print "UPDATE %% SET mimetype = §"$2"§  WHERE dir || §/§ || file = §"$1"§;" }' | \
       sed "s/'/''/g" | \
       sed "s/§/'/g" | \
       sed "s/%%/${TABLE}/g" | \
-      pv -l -i 0.1 -s "${BATCH_SIZE}" | \
       sponge 
       printf '%s\n' "${END_TRANSACTION}"
     ) | sqlite3 "${DB_PATH}"
@@ -383,7 +382,7 @@ function set_md5() {
           AND fs_type != 'securityfs'
           LIMIT(%s);" "${TABLE}" "${BATCH_SIZE}" | \
       sqlite3 "${DB_PATH}" | \
-      parallel --progress --joblog "${LOGFILE}" -m md5sum 2>/dev/null | sed 's/  /\t/'| \
+      parallel --joblog "${LOGFILE}" -m md5sum | sed 's/  /\t/'| \
       awk -F '\t' '{ print "UPDATE '"${TABLE}"' SET md5 = §"$1"§ WHERE dir || §/§ || file = §"$2"§;" }' | \
       sed "s/'/''/g" | \
       sed "s/§/'/g" | \
@@ -411,7 +410,7 @@ function create_file_db() {
   printf 'DROP INDEX IF EXISTS abs_path_%s;' "${TMPTABLE}" | sqlite3 "${DB_PATH}"
   
   # Calculates the missing mimetypes
-  #set_mimetype # This step is time consuming the first time!
+  set_mimetype # This step is time consuming the first time!
   
   # Calculates the missing md5 sums
   set_md5 # Also time consuming for a complete run
@@ -424,9 +423,9 @@ function create_file_db() {
 
 #===============================================
 TMPTABLE="tmp"
-TABLE='home'
-FINDPATH="${HOME}"
-PRUNEPATHS=' -name .cache ' 
+TABLE="home"
+FINDPATH="${HOME}/pic"
+PRUNEPATHS=" -name .cache "
 #===============================================
 # Example config to index the current users home 
 # directory
@@ -435,13 +434,13 @@ create_file_db
 
 #===============================================
 TMPTABLE="tmp"
-TABLE='root'
-INDPATH='/'
-PRUNEPATHS=' -name proc -o -name opt -o -name tmp -o -name home -o -name root -o -name sys ' 
+TABLE="root"
+INDPATH="/"
+PRUNEPATHS=" -name proc -o -name opt -o -name tmp -o -name home -o -name root -o -name sys "
 #===============================================
 # Example config to index the systems root dir
 # omitting process, user paths, ect
 #===============================================
-create_file_db 
+#create_file_db 
 #===============================================
 

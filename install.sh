@@ -1,9 +1,10 @@
 #!/bin/sh
 
-function install_parallel() {
-  CURDIR="$(pwd)"
-  [ -d tmp ] || mkdir tmp && cd tmp
+install_parallel() {
+  CURDIR="${PWD}"
   [ -d bin ] || mkdir bin
+  [ -d tmp ] || mkdir tmp
+  cd tmp
 
   wget 'http://ftp.gnu.org/gnu/parallel/parallel-latest.tar.bz2'
   tar -xf parallel-latest.tar.bz2
@@ -17,11 +18,11 @@ function install_parallel() {
   cd - rm --recursive parallel-latest.tar.bz2; cd "${CURDIR}"
 }
 
-function install_sqlite3() {
+install_sqlite3() {
   sudo apt update && sudo apt upgrade && \
   sudo apt install --yes libsqlite3-dev libreadline-dev libeditline-dev tcl
 
-  CURDIR="$(pwd)"
+  CURDIR="${PWD}"
   [ -d tmp ] || mkdir tmp
   [ -d bin ] || mkdir bin
   [ -d lib ] || mkdir lib
@@ -39,15 +40,14 @@ function install_sqlite3() {
   cp spellfix.so "${CURDIR}/lib"
 
   cd "${CURDIR}"
-  rm --recursive sqlite.tar.gz sqlite
-  rmdir tmp
+  rm --recursive tmp
 }
 
 
 # Install  dependencies
 
-sudo apt update && sudo apt install zsh pv
+#sudo apt update && sudo apt install zsh pv
 
 install_parallel
-install_sqlite
+install_sqlite3
 
