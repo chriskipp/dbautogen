@@ -197,7 +197,7 @@ function update_stats() {
 		t.change_time,
 		t.modification_time,
 		t.user,
-		"t.group",
+		t."group",
 		t.permissions
 	FROM %s AS t
 	LEFT JOIN %s AS p
@@ -209,10 +209,6 @@ function update_stats() {
   printf 'Deleting old records from %s table...\n' "${TABLE}"
   printf 'DELETE FROM %s WHERE dir IS NULL;\n' "${TABLE}" \
 	  | sqlite3 "${DB_PATH}"
-#  printf 'select %stmp %s, count(*), %s\n%s from tmp;\n' "'" "'" "'" "'" \
-#	  | sqlite3 "${DB_PATH}"
-#  printf 'select %s%s %s, count(*), %s\n%s from %s;\n' "'" "${TABLE}" "'" "'" "'" "${TABLE}" \
-#	  | sqlite3 "${DB_PATH}"
 }
 
 function copy_mimetypes() {
@@ -424,7 +420,7 @@ function create_file_db() {
 #===============================================
 TMPTABLE="tmp"
 TABLE="home"
-FINDPATH="${HOME}/pic"
+FINDPATH="${HOME}/doc"
 PRUNEPATHS=" -name .cache "
 #===============================================
 # Example config to index the current users home 
