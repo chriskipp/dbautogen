@@ -2,9 +2,10 @@
  
 #===============================================
 # Defining Variables
-DB_PATH="${PWD}/filetree.db"
+DB_PATH="${HOME}/db/filetree_home.sqlite"
+PRUNEPATHS=" -name mnt -o -name .cache -o -name .tor "
 SOURCEDIR="${HOME}"
-BATCH_SIZE=1000
+BATCH_SIZE=10000
 #===============================================
 
 #===============================================
@@ -18,8 +19,8 @@ fi
 
 # Defining printf strings for the find command
 # (Must be on one line!)
-INSERTSTR_DIRS='INSERT INTO dNode ( inode, label) VALUES ( %i, "%p");\n'
-INSERTSTR_ALLPATHS='INSERT INTO Node ( inode, label, parent_label, name) VALUES ( %i, "%p", "%h", "%f");\n'
+INSERTSTR_DIRS='INSERT INTO dNode ( inode, label) VALUES ( %i, §%p§);\n'
+INSERTSTR_ALLPATHS='INSERT INTO Node ( inode, label, parent_label, name) VALUES ( %i, §%p§, §%h§, §%f§);\n'
 #===============================================
 
 #===============================================
@@ -34,8 +35,9 @@ function bufferstream() {
   BATCH_SIZE="${1}"
   BEGIN_STRING="${2}"
   END_STRING="${3}"
+  STREAM_STRING=$(echo sed -e '"'"s/'/''/g"'"' -e "'"'s/"/""/g'"'")
   split --lines="${BATCH_SIZE}" --filter "(
-    printf '${BEGIN_STRING}\n'; cat -; printf '${END_STRING}\n'
+    printf '${BEGIN_STRING}\n'; ${STREAM_STRING} ; printf '${END_STRING}\n'
   )"
 }
 
@@ -60,18 +62,21 @@ function create_recursivefsdb() {
         name TEXT
       );
   
-      CREATE INDEX IF NOT EXISTS labels ON dnode (label);
+      CREATE INDEX IF NOT EXISTS labels ON dNode(label);
   
   ' ) | sqlite3 "${DB_PATH}"
   
+    #find "${SOURCEDIR}" -type d  -printf "${INSERTSTR_DIRS}"
+    #find "${SOURCEDIR}" -printf "${INSERTSTR_ALLPATHS}"
   (
-    find "${SOURCEDIR}" -type d -printf "${INSERTSTR_DIRS}"
-    find "${SOURCEDIR}" -printf "${INSERTSTR_ALLPATHS}"
+    find "${SOURCEDIR}" -type d  \($(printf ${PRUNEPATHS})\) -prune -o  -printf "${INSERTSTR_DIRS}"
+    find "${SOURCEDIR}" \($(printf ${PRUNEPATHS})\) -printf "${INSERTSTR_ALLPATHS}"
   ) | sed "s/'/''/g" \
     | bufferstream "${BATCH_SIZE}" 'BEGIN TRANSACTION;' 'COMMIT;' \
-    | "${PVCMD}" \
+    | sed "s/§/'/g" \
+    | pv -l -i 0.1  \
     | sqlite3 "${DB_PATH}" 2>"error.log"
-  
+#  "${PVCMD}"
   printf 'CREATE TABLE iNodes AS
     SELECT n.inode,
           n.name,
