@@ -4,7 +4,7 @@
 # Defining Variables
 DB_PATH="${HOME}/db/filetree_home.sqlite"
 PRUNEPATHS=" -name mnt -o -name .cache -o -name .tor "
-SOURCEDIR="${HOME}/tmp"
+SOURCEDIR="${HOME}"
 BATCH_SIZE=10000
 #===============================================
 
