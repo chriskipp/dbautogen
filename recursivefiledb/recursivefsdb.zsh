@@ -4,7 +4,7 @@
 # Defining Variables
 DB_PATH="${HOME}/db/filetree_home.sqlite"
 PRUNEPATHS=" -name mnt -o -name .cache -o -name .tor "
-SOURCEDIR="${HOME}"
+SOURCEDIR="${HOME}/tmp"
 BATCH_SIZE=10000
 #===============================================
 
@@ -51,44 +51,49 @@ function create_recursivefsdb() {
     PRAGMA recursive_triggers = TRUE;
 
       CREATE TABLE IF NOT EXISTS dNode (
-        inode INTEGER PRIMARY KEY AUTOINCREMENT,
+        inode INTEGER,
         label TEXT);
   
       CREATE TABLE IF NOT EXISTS Node (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id INTEGER,
         inode INTEGER,
         label TEXT,
         parent_label TEXT,
         name TEXT
       );
   
-      CREATE INDEX IF NOT EXISTS labels ON dNode(label);
+      CREATE INDEX IF NOT EXISTS idx_label ON `dNode`(label);
+      CREATE INDEX IF NOT EXISTS idx_parent_label ON `Node`(parent_label);
+
   
   ' ) | sqlite3 "${DB_PATH}"
   
     #find "${SOURCEDIR}" -type d  -printf "${INSERTSTR_DIRS}"
     #find "${SOURCEDIR}" -printf "${INSERTSTR_ALLPATHS}"
   (
-    find "${SOURCEDIR}" -type d  \($(printf ${PRUNEPATHS})\) -prune -o  -printf "${INSERTSTR_DIRS}"
-    find "${SOURCEDIR}" \($(printf ${PRUNEPATHS})\) -printf "${INSERTSTR_ALLPATHS}"
+    find "${SOURCEDIR}" \($(printf ${PRUNEPATHS})\) -prune -o -type d -printf "${INSERTSTR_DIRS}"
+    find "${SOURCEDIR}" \($(printf ${PRUNEPATHS})\) -prune -o -printf "${INSERTSTR_ALLPATHS}"
   ) | sed "s/'/''/g" \
     | bufferstream "${BATCH_SIZE}" 'BEGIN TRANSACTION;' 'COMMIT;' \
     | sed "s/§/'/g" \
     | pv -l -i 0.1  \
     | sqlite3 "${DB_PATH}" 2>"error.log"
 #  "${PVCMD}"
-  printf 'CREATE TABLE iNodes AS
-    SELECT n.inode,
-          n.name,
-          d.inode as pinode
-        FROM Node AS n
-        LEFT JOIN dNode as d
-        ON n.parent_label = d.label;
+  printf '
+  CREATE TABLE iNodes AS
+    SELECt
+      n.inode,
+      d.inode AS pinode,
+      n.name
+    FROM `Node`  n
+    LEFT JOIN `dNode` d
+      ON d.label = n.parent_label;
+      
+  DROP TABLE Node; DROP TABLE dNode;
   
-    DROP TABLE Node; DROP TABLE dNode;
-  
-    CREATE INDEX fd_idx ON `iNodes` (inode, pinode);
-    CREATE INDEX df_idx ON `iNodes` (pinode, inode); 
+  CREATE INDEX IF NOT EXISTS idx_inode_pinode ON `iNodes` (inode, pinode);
+  CREATE INDEX IF NOT EXISTS idx_pinode_inode ON `iNodes` (pinode, inode); 
+  CREATE INDEX IF NOT EXISTS idx_inode_name ON `iNodes` (inode, name); 
   ' | sqlite3 "${DB_PATH}"
   printf 'VACUUM;' | sqlite3 "${DB_PATH}"
 }
