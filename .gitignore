@@ -1,1 +1,2 @@
-recursivefiledb/error.log
+**/*.log
+**/*.sqlite
