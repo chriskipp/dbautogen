@@ -1,21 +1,43 @@
 #!/bin/zsh
 
-source "${HOME}/bin/color.sh"
+escseq=$(printf '\033[')
+
+sgr0="${escseq}39;49;00m"
+bla="${escseq}30;01m"
+red="${escseq}31;01m"
+gre="${escseq}32;01m"
+yel="${escseq}33;01m"
+blu="${escseq}34;01m"
+mag="${escseq}35;01m"
+cya="${escseq}36;01m"
+whi="${escseq}37;01m"
+
+
+DB_PATH="${1}"
+QUERY=$(printf '%s' "${2}" | sed -e 's/^[. /]\+//' -e 's/[. /]\+$//' -e 's/[ ./]/ AND /g')
 
 ffile () {
         (
-           printf "SELECT rowid,
-	     	 bm25(fts_idx, 10),
-	   	user, 'group', mimetype,
-		highlight(fts_idx, 0, '${yel}', '${sgr0}') AS name,
+           printf "
+	     SELECT
+	       -- rowid,
+               -- bm25(fts_idx, 10) AS rank,
+	       -- user, 'group',
+	       mimetype,
+	       highlight(fts_idx, 0, '${yel}', '${sgr0}') AS name,
 	       dir || '/' || file
-	       
 	     FROM fts_idx
 	     WHERE fts_idx
 	     MATCH '%s'
 	     ORDER BY bm25(fts_idx, 10)
-	     LIMIT(100);\n" "${1}"
-        ) | sqlite3 --header --column "${DB_PATH}"
+	     LIMIT(100);\n" "${2}"
+        ) | sqlite3 --header --column "${1}"
 }
 
-ffile "${@}" | fzf --ansi --multi --cycle --reverse
+ffile "${DB_PATH}" "${QUERY}" \
+	| ifne fzf \
+		--ansi \
+		--multi \
+		--cycle \
+		--reverse \
+		--header-lines=2
