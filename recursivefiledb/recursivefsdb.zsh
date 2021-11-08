@@ -6,6 +6,8 @@ DB_PATH="${HOME}/db/filetree_home.sqlite"
 PRUNEPATHS=" -name mnt -o -name .cache -o -name .tor "
 SOURCEDIR="${HOME}"
 BATCH_SIZE=10000
+ERRORLOG="${HOME}/log/filetree.log"
+[ -d $(dirname "${ERRORLOG}") ] || ERRORLOG="${PWD}/$(basename ${ERRORLOG})"
 #===============================================
 
 #===============================================
@@ -45,6 +47,7 @@ function create_recursivefsdb() {
   #===============================================
   # USAGE: create_recursivefsdb
   #===============================================
+  [ ${#} -gt 0 ] && SOURCEDIR="${1}"
   (
     printf '
     
@@ -64,22 +67,23 @@ function create_recursivefsdb() {
   
       CREATE INDEX IF NOT EXISTS idx_label ON `dNode`(label);
       CREATE INDEX IF NOT EXISTS idx_parent_label ON `Node`(parent_label);
-
   
   ' ) | sqlite3 "${DB_PATH}"
   
     #find "${SOURCEDIR}" -type d  -printf "${INSERTSTR_DIRS}"
     #find "${SOURCEDIR}" -printf "${INSERTSTR_ALLPATHS}"
   (
-    find "${SOURCEDIR}" \($(printf ${PRUNEPATHS})\) -prune -o -type d -printf "${INSERTSTR_DIRS}"
-    find "${SOURCEDIR}" \($(printf ${PRUNEPATHS})\) -prune -o -printf "${INSERTSTR_ALLPATHS}"
+    find "${SOURCEDIR}" \($(printf ${PRUNEPATHS})\) -prune -o -type d -printf "${INSERTSTR_DIRS}" 2>>"${ERRORLOG}"
+    find "${SOURCEDIR}" \($(printf ${PRUNEPATHS})\) -prune -o -printf "${INSERTSTR_ALLPATHS}" 2>>"${ERRORLOG}"
   ) | sed "s/'/''/g" \
     | bufferstream "${BATCH_SIZE}" 'BEGIN TRANSACTION;' 'COMMIT;' \
     | sed "s/§/'/g" \
-    | pv -l -i 0.1  \
-    | sqlite3 "${DB_PATH}" 2>"error.log"
-#  "${PVCMD}"
+    | eval "${PVCMD}" \
+    | sqlite3 "${DB_PATH}" 2>>"${ERRORLOG}"
+
   printf '
+  DROP TABLE IF EXISTS fts;
+  DROP TABLE IF EXISTS iNodes;
   CREATE TABLE iNodes AS
     SELECt
       n.inode,
@@ -89,12 +93,23 @@ function create_recursivefsdb() {
     LEFT JOIN `dNode` d
       ON d.label = n.parent_label;
       
-  DROP TABLE Node; DROP TABLE dNode;
+  DROP TABLE Node;
+  DROP TABLE dNode;
   
   CREATE INDEX IF NOT EXISTS idx_inode_pinode ON `iNodes` (inode, pinode);
   CREATE INDEX IF NOT EXISTS idx_pinode_inode ON `iNodes` (pinode, inode); 
-  CREATE INDEX IF NOT EXISTS idx_inode_name ON `iNodes` (inode, name); 
   ' | sqlite3 "${DB_PATH}"
+
+  printf '
+    CREATE VIRTUAL TABLE fts USING fts5(row, name);
+
+    INSERT INTO fts(row, name)
+      SELECT
+        rowid AS row,
+        name
+      FROM `iNodes` n
+  ;' | sqlite3 "${DB_PATH}"
+
   printf 'VACUUM;' | sqlite3 "${DB_PATH}"
 }
     
@@ -176,6 +191,7 @@ function get_filesystem_tree() {
   SELECT a.tree || a.label
   FROM under_directory AS a
   INNER JOIN iNodes AS i
-    ON i.inode = a.inode ;"  | sqlite3 "${DB_PATH}"
+    ON i.inode = a.inode ;" \
+	| sqlite3 "${DB_PATH}"
 }
 
